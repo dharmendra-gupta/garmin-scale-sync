@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  garmin-scale-sync:
+    build: .
+    container_name: garmin_scale_sync
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
