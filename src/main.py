@@ -3,6 +3,7 @@ import json
 import logging
 import secrets
 import threading
+from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException, status, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -11,6 +12,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, HTTPBasic
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator, model_validator
 from src.config import settings
+from garminconnect import GarminConnectAuthenticationError
 from src.garmin_client import (
     upload_to_garmin, get_garmin_client, mfa_state, log_attempt,
     get_recent_logs, clear_recent_logs
@@ -21,15 +23,28 @@ import src.garmin_client as garmin_client
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("garmin_scale_sync")
 
-app = FastAPI(title="GarminScaleSync", version="1.0.0")
+# Global state for asynchronous login thread monitoring
+login_thread = None
+login_error_detail = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """On startup: restore Garmin session from cached tokens if they exist on disk."""
+    global login_thread
+    token_path = os.path.join(settings.DATA_DIR, ".garminconnect")
+    if os.path.exists(token_path):
+        logger.info("Cached Garmin tokens found — restoring session in background.")
+        login_thread = threading.Thread(target=run_login_in_background, daemon=True)
+        login_thread.start()
+    yield
+
+
+app = FastAPI(title="GarminScaleSync", version="1.0.0", lifespan=lifespan)
 
 # Security schemes
 security_bearer = HTTPBearer()
 security_basic = HTTPBasic()
-
-# Global state for asynchronous login thread monitoring
-login_thread = None
-login_error_detail = None
 
 # Input schemas
 class BodyCompositionPayload(BaseModel):
@@ -77,11 +92,19 @@ class BodyCompositionPayload(BaseModel):
             except ZoneInfoNotFoundError:
                 pass
             offset_str = v.removeprefix("UTC")
-            if not re.fullmatch(r'[+-]\d{1,2}:\d{2}', offset_str):
-                raise ValueError(
-                    f"Unrecognized timezone '{v}'. Use an IANA name (e.g. 'America/New_York') "
-                    "or a UTC offset (e.g. '+05:30')."
-                )
+            # Accept Z / empty (UTC)
+            if offset_str.upper() in ("Z", ""):
+                return v
+            # Accept compact form: +0530
+            if re.fullmatch(r'[+-]\d{4}', offset_str):
+                return v
+            # Accept colon form: +05:30
+            if re.fullmatch(r'[+-]\d{1,2}:\d{2}', offset_str):
+                return v
+            raise ValueError(
+                f"Unrecognized timezone '{v}'. Use an IANA name (e.g. 'America/New_York'), "
+                "a UTC offset (e.g. '+05:30', '+0530'), or 'Z' for UTC."
+            )
         return v
 
     @model_validator(mode='after')
@@ -130,12 +153,11 @@ def run_login_in_background():
     try:
         get_garmin_client()
         logger.info("Background Garmin Connect session established successfully.")
+    except GarminConnectAuthenticationError as e:
+        login_error_detail = "Garmin Connect session expired or credentials invalid. Please re-login on your bridge server dashboard."
+        logger.error(f"Background Garmin Connect authentication failed: {e}")
     except Exception as e:
-        http_code = getattr(e, "status", getattr(e, "status_code", 500))
-        if http_code == 401:
-            login_error_detail = "Garmin Connect session expired or credentials invalid. Please re-login on your bridge server dashboard."
-        else:
-            login_error_detail = str(e)
+        login_error_detail = str(e)
         logger.error(f"Background Garmin Connect authentication failed: {e}")
 
 def check_auth_status():

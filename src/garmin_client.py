@@ -7,7 +7,12 @@ from collections import deque
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from garminconnect import Garmin
+from garminconnect import (
+    Garmin,
+    GarminConnectAuthenticationError,
+    GarminConnectConnectionError,
+    GarminConnectTooManyRequestsError,
+)
 from src.config import settings
 
 logger = logging.getLogger("garmin_scale_sync")
@@ -155,27 +160,47 @@ def reset_garmin_client():
         _garmin_client_instance = None
 
 
+def _parse_offset_tz(tz_str: str) -> timezone:
+    """Parse a UTC offset string into a timezone object.
+
+    Accepts: +05:30, +0530, -04:00, Z, UTC+05:30, UTC-04:00
+    """
+    offset_str = tz_str.removeprefix("UTC")
+    if offset_str.upper() in ("Z", ""):
+        return timezone.utc
+    # Normalise compact form (+0530) to colon form (+05:30)
+    m = re.fullmatch(r'([+-])(\d{2})(\d{2})', offset_str)
+    if m:
+        sign, h, mn = m.groups()
+        offset_str = f"{sign}{h}:{mn}"
+    m = re.fullmatch(r'([+-])(\d{1,2}):(\d{2})', offset_str)
+    if not m:
+        raise ValueError(
+            f"Unrecognized timezone: '{tz_str}'. Use an IANA name (e.g. 'America/New_York'), "
+            "a UTC offset with or without colon (e.g. '+05:30', '+0530'), or 'Z' for UTC."
+        )
+    sign, h, mn = m.groups()
+    total = int(h) * 60 + int(mn)
+    if sign == '-':
+        total = -total
+    return timezone(timedelta(minutes=total))
+
+
 def build_timestamp(date: str, time: str, tz_str: Optional[str] = None) -> str:
-    """Combines date, time, and optional timezone into an ISO 8601 timestamp string."""
+    """Combines date, time, and optional timezone into a UTC ISO 8601 timestamp.
+
+    Garmin Connect's API interprets all timestamps as UTC, so the local time is
+    converted to UTC before being sent regardless of the original timezone.
+    """
     naive_dt = datetime.fromisoformat(f"{date}T{time}")
     if tz_str is None:
-        return naive_dt.replace(tzinfo=timezone.utc).isoformat()
-    try:
-        return naive_dt.replace(tzinfo=ZoneInfo(tz_str)).isoformat()
-    except ZoneInfoNotFoundError:
-        pass
-    offset_str = tz_str.removeprefix("UTC")
-    match = re.fullmatch(r'([+-])(\d{1,2}):(\d{2})', offset_str)
-    if not match:
-        raise ValueError(
-            f"Unrecognized timezone: '{tz_str}'. Use an IANA name (e.g. 'America/New_York') "
-            "or a UTC offset (e.g. '+05:30')."
-        )
-    sign, hours, minutes = match.groups()
-    total_minutes = int(hours) * 60 + int(minutes)
-    if sign == '-':
-        total_minutes = -total_minutes
-    return naive_dt.replace(tzinfo=timezone(timedelta(minutes=total_minutes))).isoformat()
+        aware_dt = naive_dt.replace(tzinfo=timezone.utc)
+    else:
+        try:
+            aware_dt = naive_dt.replace(tzinfo=ZoneInfo(tz_str))
+        except ZoneInfoNotFoundError:
+            aware_dt = naive_dt.replace(tzinfo=_parse_offset_tz(tz_str))
+    return aware_dt.astimezone(timezone.utc).isoformat()
 
 
 def upload_to_garmin(
@@ -222,22 +247,21 @@ def upload_to_garmin(
 
         log_attempt(status="Success", payload=payload)
 
-    except Exception as e:
-        logger.error(f"Asynchronous Garmin Sync Failed: {e}", exc_info=True)
-
-        # Extract HTTP status code from exception if available (e.g. 401, 429), else default to 500
-        http_code = getattr(e, "status", getattr(e, "status_code", 500))
-
-        error_detail = str(e)
-        # If the session is expired (401), reset the singleton so next upload re-authenticates
-        if http_code == 401:
-            logger.warning("Garmin session expired (401). Resetting client for re-authentication.")
-            reset_garmin_client()
-            error_detail = "Garmin Connect session expired or credentials invalid. Please re-login on your bridge server dashboard."
-
+    except GarminConnectAuthenticationError as e:
+        logger.warning(f"Garmin session expired or credentials invalid: {e}. Resetting client.")
+        reset_garmin_client()
         log_attempt(
             status="Failed",
             payload=payload,
-            error_detail=error_detail,
-            http_code=http_code
+            error_detail="Garmin Connect session expired or credentials invalid. Please re-login on your bridge server dashboard.",
+            http_code=401
         )
+    except GarminConnectTooManyRequestsError as e:
+        logger.error(f"Garmin Connect rate limit hit: {e}")
+        log_attempt(status="Failed", payload=payload, error_detail=str(e), http_code=429)
+    except GarminConnectConnectionError as e:
+        logger.error(f"Garmin Connect connection error: {e}")
+        log_attempt(status="Failed", payload=payload, error_detail=str(e), http_code=503)
+    except Exception as e:
+        logger.error(f"Asynchronous Garmin Sync Failed: {e}", exc_info=True)
+        log_attempt(status="Failed", payload=payload, error_detail=str(e), http_code=500)
