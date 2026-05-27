@@ -8,8 +8,61 @@ from unittest.mock import patch, MagicMock
 import src.garmin_client as garmin_client_module
 from src.garmin_client import (
     mfa_state, memory_logs, prompt_mfa_callback, upload_to_garmin,
-    get_recent_logs, clear_recent_logs, log_attempt, reset_garmin_client
+    get_recent_logs, clear_recent_logs, log_attempt, reset_garmin_client,
+    build_timestamp,
 )
+
+
+# ---------------------------------------------------------------------------
+# build_timestamp tests
+# ---------------------------------------------------------------------------
+
+def test_build_timestamp_no_timezone_defaults_to_utc():
+    """Test that omitting timezone produces a UTC ISO timestamp."""
+    result = build_timestamp("2024-01-15", "08:30:00")
+    assert result == "2024-01-15T08:30:00+00:00"
+
+
+def test_build_timestamp_hhmm_format():
+    """Test that HH:MM time (no seconds) is accepted and normalised."""
+    result = build_timestamp("2024-01-15", "08:30")
+    assert result == "2024-01-15T08:30:00+00:00"
+
+
+def test_build_timestamp_iana_timezone():
+    """Test timestamp built from an IANA timezone name."""
+    result = build_timestamp("2024-01-15", "08:30:00", "UTC")
+    assert result == "2024-01-15T08:30:00+00:00"
+
+
+def test_build_timestamp_iana_timezone_named():
+    """Test timestamp offset is applied correctly for a named IANA zone."""
+    result = build_timestamp("2024-01-15", "08:30:00", "America/New_York")
+    assert "-05:00" in result or "-04:00" in result  # EST or EDT depending on DST
+
+
+def test_build_timestamp_positive_utc_offset():
+    """Test UTC+ offset string produces correct ISO timestamp."""
+    result = build_timestamp("2024-01-15", "08:30:00", "+05:30")
+    assert result == "2024-01-15T08:30:00+05:30"
+
+
+def test_build_timestamp_utc_prefix_offset():
+    """Test 'UTC+HH:MM' prefix format is handled correctly."""
+    result = build_timestamp("2024-01-15", "08:30:00", "UTC+05:30")
+    assert result == "2024-01-15T08:30:00+05:30"
+
+
+def test_build_timestamp_negative_utc_offset():
+    """Test UTC- offset string produces correct ISO timestamp."""
+    result = build_timestamp("2024-01-15", "08:30:00", "-05:00")
+    assert result == "2024-01-15T08:30:00-05:00"
+
+
+def test_build_timestamp_invalid_timezone_raises():
+    """Test that an unrecognised timezone string raises ValueError."""
+    with pytest.raises(ValueError, match="Unrecognized timezone"):
+        build_timestamp("2024-01-15", "08:30:00", "Bogus/Zone")
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +139,19 @@ def test_upload_to_garmin_only_weight(mock_log, mock_get_client):
 
     mock_log.assert_called_once()
     assert mock_log.call_args.kwargs["status"] == "Success"
+
+
+@patch("src.garmin_client.get_garmin_client")
+@patch("src.garmin_client.log_attempt")
+def test_upload_to_garmin_uses_provided_date_time_tz(mock_log, mock_get_client):
+    """Test that upload builds and passes the correct timestamp when date/time/tz are given."""
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+
+    upload_to_garmin(weight=80.0, date="2024-01-15", time="08:30:00", tz="+05:30")
+
+    call_kwargs = mock_client.add_body_composition.call_args.kwargs
+    assert call_kwargs["timestamp"] == "2024-01-15T08:30:00+05:30"
 
 
 @patch("src.garmin_client.get_garmin_client")

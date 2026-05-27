@@ -11,6 +11,7 @@ Designed explicitly with **Raspberry Pi (ARM64)** deployment in mind, this proje
 - 🛡️ **Webhook Security:** Bearer token authentication ensures only your allowed services can queue body composition payloads.
 - 📦 **Multi-Arch Docker Images:** Ready for `amd64` (Standard Servers/PCs) and `arm64` (Raspberry Pi 3/4/5).
 - 💾 **Persistent Session & Logs:** Session tokens and upload logs survive container restarts via mounted volumes.
+- 🕐 **Historical Data Backfill:** Post measurements for any past date and time with timezone support — useful for syncing missed readings or importing from another source.
 
 ---
 
@@ -71,17 +72,106 @@ Send a `POST` request to the webhook endpoint whenever you weigh yourself.
 Authorization: Bearer <API_BEARER_TOKEN>
 Content-Type: application/json
 ```
-**Payload Format:**
+
+### Payload Format
+
+All body composition fields are optional except `weight`.
+
 ```json
 {
   "weight": 80.5,
   "body_fat": 15.2,
   "water": 58.0,
   "bone_mass": 3.1,
-  "lean_body_mass": 68.2
+  "lean_body_mass": 68.2,
+  "date": "2024-01-15",
+  "time": "08:30:00",
+  "timezone": "America/New_York"
 }
 ```
-*(All values are in kilograms/percentages as floats)*
+
+*(Weight, bone mass, and lean body mass are in kilograms. Body fat and water are percentages.)*
+
+### Datetime Fields
+
+`date`, `time`, and `timezone` are all optional. When omitted, the upload is timestamped at the current UTC time.
+
+| Field | Required | Format | Example |
+|-------|----------|--------|---------|
+| `date` | No — but required with `time` | `YYYY-MM-DD` | `"2024-01-15"` |
+| `time` | No — but required with `date` | `HH:MM` or `HH:MM:SS` | `"08:30"` or `"08:30:00"` |
+| `timezone` | No | IANA name or UTC offset | `"America/New_York"` or `"+05:30"` |
+
+**Rules:**
+- `date` and `time` must be provided together — one without the other returns `422`.
+- `timezone` without `date`/`time` returns `422`.
+- If `date`/`time` are provided but `timezone` is omitted, **UTC is assumed**.
+
+---
+
+## 📋 API Reference
+
+All management endpoints use **HTTP Basic Auth** (`API_BASIC_AUTH_USERNAME` / `API_BASIC_AUTH_PASSWORD`).  
+The webhook endpoint uses a **Bearer token** (`API_BEARER_TOKEN`).
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/` | Basic | Web dashboard UI |
+| `GET` | `/v1/auth/status` | Basic | Returns current Garmin Connect session state |
+| `POST` | `/v1/auth/login` | Basic | Initiates Garmin Connect login in the background |
+| `POST` | `/v1/auth/mfa` | Basic | Submits MFA code to unblock the login thread |
+| `GET` | `/v1/logs` | Basic | Returns recent sync log entries |
+| `POST` | `/v1/logs/clear` | Basic | Clears all sync logs |
+| `POST` | `/v1/webhook/garmin` | Bearer | Queues a body composition upload to Garmin Connect |
+
+### Auth Status Response
+
+`GET /v1/auth/status` returns one of:
+
+```json
+{ "status": "unauthenticated", "message": "Not authenticated." }
+{ "status": "checking",        "message": "Authentication in progress..." }
+{ "status": "mfa_required",    "message": "Multi-Factor Authentication code required." }
+{ "status": "authenticated",   "message": "Garmin Connect session active." }
+```
+
+### Example: Post current weight
+
+```bash
+curl -X POST https://<host>/v1/webhook/garmin \
+  -H "Authorization: Bearer <API_BEARER_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"weight": 80.5, "body_fat": 15.2, "water": 58.0, "bone_mass": 3.1, "lean_body_mass": 68.2}'
+```
+
+### Example: Backfill a past measurement
+
+```bash
+curl -X POST https://<host>/v1/webhook/garmin \
+  -H "Authorization: Bearer <API_BEARER_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"weight": 80.5, "body_fat": 15.2, "date": "2024-01-15", "time": "08:30:00", "timezone": "America/New_York"}'
+```
+
+### Example: Trigger Login
+
+```bash
+curl -u admin:your_password -X POST https://<host>/v1/auth/login
+```
+
+### Example: Submit MFA Code
+
+```bash
+curl -u admin:your_password -X POST https://<host>/v1/auth/mfa \
+  -H "Content-Type: application/json" \
+  -d '{"code": "123456"}'
+```
+
+### Example: View Logs
+
+```bash
+curl -u admin:your_password https://<host>/v1/logs
+```
 
 ---
 
@@ -97,6 +187,13 @@ Garmin sometimes triggers MFA to verify logins. If this happens:
 
 ## 🏗 Development & Testing
 
+### Running Tests (Docker)
+All tests run inside Docker to match the production environment exactly.
+```bash
+docker compose build
+docker compose run --rm garmin-scale-sync pytest src/tests/ -v
+```
+
 ### Running Locally (Without Docker)
 ```bash
 python -m venv venv
@@ -104,12 +201,6 @@ source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env # edit your credentials
 python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-### Running Tests
-The test suite uses `pytest` to validate core logic, MFA thread signaling, and FastAPI endpoint integrations.
-```bash
-pytest src/tests/ -v
 ```
 
 ---

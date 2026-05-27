@@ -100,6 +100,110 @@ def test_webhook_only_weight_payload_returns_201():
 
 
 # ---------------------------------------------------------------------------
+# Webhook datetime field tests
+# ---------------------------------------------------------------------------
+
+def test_webhook_with_date_and_time_returns_201():
+    """Test that webhook accepts a payload with explicit date and time."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "date": "2024-01-15", "time": "08:30:00"},
+    )
+    assert response.status_code == 201
+
+
+def test_webhook_with_date_time_hhmm_returns_201():
+    """Test that HH:MM time format (no seconds) is accepted."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "date": "2024-01-15", "time": "08:30"},
+    )
+    assert response.status_code == 201
+
+
+def test_webhook_with_iana_timezone_returns_201():
+    """Test that webhook accepts a payload with IANA timezone name."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "date": "2024-01-15", "time": "08:30:00", "timezone": "America/New_York"},
+    )
+    assert response.status_code == 201
+
+
+def test_webhook_with_utc_offset_timezone_returns_201():
+    """Test that webhook accepts a payload with UTC offset timezone."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "date": "2024-01-15", "time": "08:30:00", "timezone": "+05:30"},
+    )
+    assert response.status_code == 201
+
+
+def test_webhook_date_without_time_returns_422():
+    """Test that providing date without time is rejected."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "date": "2024-01-15"},
+    )
+    assert response.status_code == 422
+
+
+def test_webhook_time_without_date_returns_422():
+    """Test that providing time without date is rejected."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "time": "08:30:00"},
+    )
+    assert response.status_code == 422
+
+
+def test_webhook_timezone_without_date_time_returns_422():
+    """Test that providing timezone without date and time is rejected."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "timezone": "UTC"},
+    )
+    assert response.status_code == 422
+
+
+def test_webhook_invalid_date_format_returns_422():
+    """Test that a non-YYYY-MM-DD date string is rejected."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "date": "15-01-2024", "time": "08:30:00"},
+    )
+    assert response.status_code == 422
+
+
+def test_webhook_invalid_time_format_returns_422():
+    """Test that an unparseable time string is rejected."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "date": "2024-01-15", "time": "8:30am"},
+    )
+    assert response.status_code == 422
+
+
+def test_webhook_invalid_timezone_returns_422():
+    """Test that an unrecognised timezone string is rejected."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "date": "2024-01-15", "time": "08:30:00", "timezone": "Bogus/Zone"},
+    )
+    assert response.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # Auth status (GET /v1/auth/status) tests
 # ---------------------------------------------------------------------------
 
