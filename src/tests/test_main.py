@@ -470,6 +470,14 @@ def test_clear_logs_empties_logs():
 # Dry-run mode (DRY_RUN=true) tests
 # ---------------------------------------------------------------------------
 
+def test_login_dry_run_returns_dry_run_status():
+    """Login endpoint returns dry_run status instead of starting a login thread."""
+    with patch.object(settings, "DRY_RUN", True):
+        response = client.post("/v1/auth/login", headers=get_basic_auth_headers())
+    assert response.status_code == 200
+    assert response.json()["status"] == "dry_run"
+
+
 def test_webhook_dry_run_returns_dry_run_status(mock_upload_to_garmin):
     """Dry-run mode returns 201 with status='dry_run' instead of 'accepted'."""
     with patch.object(settings, "DRY_RUN", True):
