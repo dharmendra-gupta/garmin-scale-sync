@@ -7,8 +7,8 @@ import src.main as main_module
 @pytest.fixture(autouse=True)
 def mock_upload_to_garmin():
     """Prevent real Garmin network calls from background tasks during webhook tests."""
-    with patch("src.main.upload_to_garmin"):
-        yield
+    with patch("src.main.upload_to_garmin") as mock:
+        yield mock
 
 
 @pytest.fixture(autouse=True)

@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     API_BASIC_AUTH_PASSWORD: str
     
     PERSIST_LOGS: bool = False
+    DRY_RUN: bool = False
     
     HOST: str = "0.0.0.0"
     PORT: int = 8000
