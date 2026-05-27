@@ -390,7 +390,7 @@
                 const username = prompt("Enter Basic Auth Username:");
                 const password = prompt("Enter Basic Auth Password:");
                 if (username && password) {
-                    basicAuthHeader = 'Basic ' + btoa(username + ':' + password);
+                    basicAuthHeader = 'Basic ' + btoa(unescape(encodeURIComponent(username + ':' + password)));
                     // Retry request
                     res = await fetch(url, {
                         ...options,

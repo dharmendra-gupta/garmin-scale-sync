@@ -5,6 +5,7 @@ import pytest
 import threading
 from unittest.mock import patch, MagicMock
 
+from garminconnect import GarminConnectAuthenticationError, GarminConnectTooManyRequestsError, GarminConnectConnectionError
 import src.garmin_client as garmin_client_module
 from src.garmin_client import (
     mfa_state, memory_logs, prompt_mfa_callback, upload_to_garmin,
@@ -36,27 +37,40 @@ def test_build_timestamp_iana_timezone():
 
 
 def test_build_timestamp_iana_timezone_named():
-    """Test timestamp offset is applied correctly for a named IANA zone."""
+    """Test local time is correctly converted to UTC for a named IANA zone."""
+    # America/New_York in January is EST (UTC-5): 08:30 local → 13:30 UTC
     result = build_timestamp("2024-01-15", "08:30:00", "America/New_York")
-    assert "-05:00" in result or "-04:00" in result  # EST or EDT depending on DST
+    assert result == "2024-01-15T13:30:00+00:00"
 
 
 def test_build_timestamp_positive_utc_offset():
-    """Test UTC+ offset string produces correct ISO timestamp."""
+    """Test UTC+ offset converts to UTC correctly: 08:30+05:30 → 03:00 UTC."""
     result = build_timestamp("2024-01-15", "08:30:00", "+05:30")
-    assert result == "2024-01-15T08:30:00+05:30"
+    assert result == "2024-01-15T03:00:00+00:00"
 
 
 def test_build_timestamp_utc_prefix_offset():
-    """Test 'UTC+HH:MM' prefix format is handled correctly."""
+    """Test 'UTC+HH:MM' prefix is stripped and converts to UTC correctly."""
     result = build_timestamp("2024-01-15", "08:30:00", "UTC+05:30")
-    assert result == "2024-01-15T08:30:00+05:30"
+    assert result == "2024-01-15T03:00:00+00:00"
 
 
 def test_build_timestamp_negative_utc_offset():
-    """Test UTC- offset string produces correct ISO timestamp."""
+    """Test UTC- offset converts to UTC correctly: 08:30-05:00 → 13:30 UTC."""
     result = build_timestamp("2024-01-15", "08:30:00", "-05:00")
-    assert result == "2024-01-15T08:30:00-05:00"
+    assert result == "2024-01-15T13:30:00+00:00"
+
+
+def test_build_timestamp_z_suffix():
+    """Test that 'Z' is treated as UTC."""
+    result = build_timestamp("2024-01-15", "08:30:00", "Z")
+    assert result == "2024-01-15T08:30:00+00:00"
+
+
+def test_build_timestamp_compact_offset():
+    """Test that compact offset without colon (+0530) is accepted."""
+    result = build_timestamp("2024-01-15", "08:30:00", "+0530")
+    assert result == "2024-01-15T03:00:00+00:00"
 
 
 def test_build_timestamp_invalid_timezone_raises():
@@ -151,7 +165,8 @@ def test_upload_to_garmin_uses_provided_date_time_tz(mock_log, mock_get_client):
     upload_to_garmin(weight=80.0, date="2024-01-15", time="08:30:00", tz="+05:30")
 
     call_kwargs = mock_client.add_body_composition.call_args.kwargs
-    assert call_kwargs["timestamp"] == "2024-01-15T08:30:00+05:30"
+    # 08:30+05:30 converted to UTC = 03:00 UTC
+    assert call_kwargs["timestamp"] == "2024-01-15T03:00:00+00:00"
 
 
 @patch("src.garmin_client.get_garmin_client")
@@ -170,25 +185,32 @@ def test_upload_to_garmin_failure_defaults_to_500(mock_log, mock_get_client):
 
 @patch("src.garmin_client.get_garmin_client")
 @patch("src.garmin_client.log_attempt")
-def test_upload_extracts_http_status_code(mock_log, mock_get_client):
-    """Test that HTTP status code is extracted from exceptions that carry one."""
-    err = Exception("Rate limited")
-    err.status = 429
-    mock_get_client.side_effect = err
+def test_upload_rate_limit_logs_429(mock_log, mock_get_client):
+    """Test that GarminConnectTooManyRequestsError is logged with http_code 429."""
+    mock_get_client.side_effect = GarminConnectTooManyRequestsError("Rate limited")
 
     upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
 
     assert mock_log.call_args.kwargs["http_code"] == 429
 
 
+@patch("src.garmin_client.get_garmin_client")
+@patch("src.garmin_client.log_attempt")
+def test_upload_connection_error_logs_503(mock_log, mock_get_client):
+    """Test that GarminConnectConnectionError is logged with http_code 503."""
+    mock_get_client.side_effect = GarminConnectConnectionError("Connection failed")
+
+    upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
+
+    assert mock_log.call_args.kwargs["http_code"] == 503
+
+
 @patch("src.garmin_client.reset_garmin_client")
 @patch("src.garmin_client.log_attempt")
 @patch("src.garmin_client.get_garmin_client")
-def test_upload_401_resets_singleton(mock_get_client, mock_log, mock_reset):
-    """Test that a 401 from Garmin triggers reset_garmin_client() for re-auth."""
-    err = Exception("Unauthorized")
-    err.status = 401
-    mock_get_client.side_effect = err
+def test_upload_auth_error_resets_singleton(mock_get_client, mock_log, mock_reset):
+    """Test that GarminConnectAuthenticationError resets the singleton and logs 401."""
+    mock_get_client.side_effect = GarminConnectAuthenticationError("Unauthorized")
 
     upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
 

@@ -9,39 +9,36 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+
     permissions:
       contents: read
       pull-requests: write
 
     steps:
     - uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build image (with layer cache)
+      uses: docker/build-push-action@v5
       with:
-        python-version: '3.12'
-        cache: 'pip'
-        
-    - name: Install system dependencies
+        context: .
+        push: false
+        load: true
+        tags: garmin-scale-sync:ci
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Run pytest inside Docker
       run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends ca-certificates curl
-        
-    - name: Install python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        
-    - name: Run pytest
-      env:
-        PYTHONPATH: ${{ github.workspace }}
-        GARMIN_EMAIL: "test@example.com"
-        GARMIN_PASSWORD: "password"
-        API_BEARER_TOKEN: "secret"
-        API_BASIC_AUTH_PASSWORD: "admin"
-      run: |
-        pytest src/tests/ -v
+        docker run --rm \
+          -e GARMIN_EMAIL=test@example.com \
+          -e GARMIN_PASSWORD=password \
+          -e API_BEARER_TOKEN=secret \
+          -e API_BASIC_AUTH_PASSWORD=admin \
+          garmin-scale-sync:ci \
+          pytest src/tests/ -n auto -v
 
     - name: Notify Repository Owner to Merge
       if: github.event_name == 'pull_request' && success()

@@ -1,16 +1,18 @@
+import asyncio
 import base64
+import os
+import tempfile
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 
 from src.config import settings
-from src.main import app
+from src.main import app, lifespan
 from src.garmin_client import mfa_state, memory_logs, log_attempt
 import src.garmin_client as garmin_client_module
 import src.main as main_module
 
 client = TestClient(app)
-
 
 def get_basic_auth_headers():
     username = settings.API_BASIC_AUTH_USERNAME
@@ -22,6 +24,48 @@ def get_basic_auth_headers():
 
 def get_bearer_headers():
     return {"Authorization": f"Bearer {settings.API_BEARER_TOKEN}"}
+
+
+# ---------------------------------------------------------------------------
+# Lifespan / startup auto-restore tests
+# ---------------------------------------------------------------------------
+
+@patch("src.main.threading.Thread")
+def test_lifespan_starts_login_thread_when_token_file_exists(mock_thread):
+    """Test that startup auto-restores session when a cached token file is present."""
+    mock_instance = MagicMock()
+    mock_thread.return_value = mock_instance
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        token_file = os.path.join(tmpdir, ".garminconnect")
+        open(token_file, "w").close()
+
+        with patch("src.main.settings") as mock_settings:
+            mock_settings.DATA_DIR = tmpdir
+
+            async def run():
+                async with lifespan(app):
+                    pass
+
+            asyncio.run(run())
+
+    mock_instance.start.assert_called_once()
+
+
+@patch("src.main.threading.Thread")
+def test_lifespan_skips_login_when_no_token_file(mock_thread):
+    """Test that startup does NOT auto-login when no cached token file exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with patch("src.main.settings") as mock_settings:
+            mock_settings.DATA_DIR = tmpdir
+
+            async def run():
+                async with lifespan(app):
+                    pass
+
+            asyncio.run(run())
+
+    mock_thread.return_value.start.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +205,26 @@ def test_webhook_time_without_date_returns_422():
         json={"weight": 80.0, "time": "08:30:00"},
     )
     assert response.status_code == 422
+
+
+def test_webhook_with_z_timezone_returns_201():
+    """Test that 'Z' is accepted as a valid UTC timezone."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "date": "2024-01-15", "time": "08:30:00", "timezone": "Z"},
+    )
+    assert response.status_code == 201
+
+
+def test_webhook_with_compact_offset_timezone_returns_201():
+    """Test that compact UTC offset without colon (e.g. +0530) is accepted."""
+    response = client.post(
+        "/v1/webhook/garmin",
+        headers=get_bearer_headers(),
+        json={"weight": 80.0, "date": "2024-01-15", "time": "08:30:00", "timezone": "+0530"},
+    )
+    assert response.status_code == 201
 
 
 def test_webhook_timezone_without_date_time_returns_422():
