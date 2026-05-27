@@ -14,7 +14,6 @@ import src.main as main_module
 
 client = TestClient(app)
 
-
 def get_basic_auth_headers():
     username = settings.API_BASIC_AUTH_USERNAME
     password = settings.API_BASIC_AUTH_PASSWORD
