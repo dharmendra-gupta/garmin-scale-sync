@@ -237,6 +237,9 @@ async def initiate_login():
     """Asynchronously initiates the login sequence in a separate background thread."""
     global login_thread
 
+    if settings.DRY_RUN:
+        return {"status": "dry_run", "message": "Login is disabled in dry-run mode."}
+
     if mfa_state["waiting"]:
         return {"status": "mfa_required", "message": "MFA code is already requested and waiting."}
 
