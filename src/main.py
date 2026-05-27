@@ -8,7 +8,8 @@ from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException, status, Re
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, Field
+from datetime import datetime
+from pydantic import BaseModel, Field, field_validator, model_validator
 from src.config import settings
 from src.garmin_client import (
     upload_to_garmin, get_garmin_client, mfa_state, log_attempt,
@@ -37,6 +38,59 @@ class BodyCompositionPayload(BaseModel):
     water: Optional[float] = Field(None, description="Body hydration percentage in %")
     bone_mass: Optional[float] = Field(None, description="Bone mass in kg")
     lean_body_mass: Optional[float] = Field(None, description="Lean body mass in kg")
+    date: Optional[str] = Field(None, description="Measurement date in YYYY-MM-DD format")
+    time: Optional[str] = Field(None, description="Measurement time in HH:MM or HH:MM:SS format")
+    timezone: Optional[str] = Field(None, description="Timezone as IANA name (e.g. 'America/New_York') or UTC offset (e.g. '+05:30')")
+
+    @field_validator('date')
+    @classmethod
+    def validate_date(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            try:
+                datetime.strptime(v, '%Y-%m-%d')
+            except ValueError:
+                raise ValueError("Date must be in YYYY-MM-DD format.")
+        return v
+
+    @field_validator('time')
+    @classmethod
+    def validate_time(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            for fmt in ('%H:%M:%S', '%H:%M'):
+                try:
+                    datetime.strptime(v, fmt)
+                    return v
+                except ValueError:
+                    continue
+            raise ValueError("Time must be in HH:MM or HH:MM:SS format.")
+        return v
+
+    @field_validator('timezone')
+    @classmethod
+    def validate_timezone(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+            import re
+            try:
+                ZoneInfo(v)
+                return v
+            except ZoneInfoNotFoundError:
+                pass
+            offset_str = v.removeprefix("UTC")
+            if not re.fullmatch(r'[+-]\d{1,2}:\d{2}', offset_str):
+                raise ValueError(
+                    f"Unrecognized timezone '{v}'. Use an IANA name (e.g. 'America/New_York') "
+                    "or a UTC offset (e.g. '+05:30')."
+                )
+        return v
+
+    @model_validator(mode='after')
+    def validate_datetime_fields(self) -> 'BodyCompositionPayload':
+        if (self.date is None) != (self.time is None):
+            raise ValueError("Both 'date' and 'time' must be provided together, or neither.")
+        if self.timezone is not None and self.date is None:
+            raise ValueError("'timezone' requires 'date' and 'time' to be provided.")
+        return self
 
 class MFAPayload(BaseModel):
     code: str = Field(..., description="6-digit Multi-Factor Authentication code")
@@ -112,6 +166,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         payload = {"raw": "Could not parse invalid request body."}
 
     error_detail = exc.errors()
+    # Pydantic 2 embeds raw Exception objects in ctx which aren't JSON-serializable — convert them
+    for error in error_detail:
+        if "ctx" in error and isinstance(error["ctx"].get("error"), Exception):
+            error["ctx"]["error"] = str(error["ctx"]["error"])
 
     # Write to persistence logs (if enabled) and stdout
     log_attempt(
@@ -200,7 +258,10 @@ async def receive_webhook(payload: BodyCompositionPayload, background_tasks: Bac
         fat=payload.body_fat,
         water=payload.water,
         bone=payload.bone_mass,
-        lean_mass=payload.lean_body_mass
+        lean_mass=payload.lean_body_mass,
+        date=payload.date,
+        time=payload.time,
+        tz=payload.timezone,
     )
 
     return {"status": "accepted", "message": "Measurement queued for Garmin upload"}

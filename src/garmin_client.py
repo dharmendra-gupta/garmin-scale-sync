@@ -1,10 +1,12 @@
 import os
 import json
 import logging
+import re
 import threading
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from garminconnect import Garmin
 from src.config import settings
 
@@ -153,12 +155,38 @@ def reset_garmin_client():
         _garmin_client_instance = None
 
 
+def build_timestamp(date: str, time: str, tz_str: Optional[str] = None) -> str:
+    """Combines date, time, and optional timezone into an ISO 8601 timestamp string."""
+    naive_dt = datetime.fromisoformat(f"{date}T{time}")
+    if tz_str is None:
+        return naive_dt.replace(tzinfo=timezone.utc).isoformat()
+    try:
+        return naive_dt.replace(tzinfo=ZoneInfo(tz_str)).isoformat()
+    except ZoneInfoNotFoundError:
+        pass
+    offset_str = tz_str.removeprefix("UTC")
+    match = re.fullmatch(r'([+-])(\d{1,2}):(\d{2})', offset_str)
+    if not match:
+        raise ValueError(
+            f"Unrecognized timezone: '{tz_str}'. Use an IANA name (e.g. 'America/New_York') "
+            "or a UTC offset (e.g. '+05:30')."
+        )
+    sign, hours, minutes = match.groups()
+    total_minutes = int(hours) * 60 + int(minutes)
+    if sign == '-':
+        total_minutes = -total_minutes
+    return naive_dt.replace(tzinfo=timezone(timedelta(minutes=total_minutes))).isoformat()
+
+
 def upload_to_garmin(
     weight: float,
     fat: Optional[float] = None,
     water: Optional[float] = None,
     bone: Optional[float] = None,
-    lean_mass: Optional[float] = None
+    lean_mass: Optional[float] = None,
+    date: Optional[str] = None,
+    time: Optional[str] = None,
+    tz: Optional[str] = None,
 ):
     """Executes asynchronous background connection and payload push to Garmin Connect."""
     payload = {
@@ -180,9 +208,10 @@ def upload_to_garmin(
 
         client = get_garmin_client()
 
-        logger.info("Uploading body composition data to Garmin Connect...")
+        timestamp = build_timestamp(date, time, tz) if date and time else datetime.now(timezone.utc).isoformat()
+        logger.info(f"Uploading body composition data to Garmin Connect (timestamp: {timestamp})...")
         client.add_body_composition(
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=timestamp,
             weight=weight,
             percent_fat=fat,
             percent_hydration=water,
