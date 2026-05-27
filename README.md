@@ -12,6 +12,7 @@ Designed explicitly with **Raspberry Pi (ARM64)** deployment in mind, this proje
 - 📦 **Multi-Arch Docker Images:** Ready for `amd64` (Standard Servers/PCs) and `arm64` (Raspberry Pi 3/4/5).
 - 💾 **Persistent Session & Logs:** Session tokens and upload logs survive container restarts via mounted volumes.
 - 🕐 **Historical Data Backfill:** Post measurements for any past date and time with timezone support — useful for syncing missed readings or importing from another source.
+- 🧪 **Dry-Run Mode:** Validate client payloads locally without touching Garmin servers — received data is logged to the dashboard so you can iterate on your integration freely.
 
 ---
 
@@ -47,8 +48,11 @@ Designed explicitly with **Raspberry Pi (ARM64)** deployment in mind, this proje
    API_BASIC_AUTH_USERNAME=admin
    API_BASIC_AUTH_PASSWORD=secure_admin_password
    
-   # Logging (Set to True if you want UI logs to persist)
-   PERSIST_LOGS=True
+   # Logging (set to true if you want UI logs to persist across restarts)
+   PERSIST_LOGS=false
+   
+   # Dry-run (set to true to log payloads without uploading to Garmin)
+   DRY_RUN=false
    ```
 
 4. Launch the container:
@@ -182,6 +186,51 @@ Garmin sometimes triggers MFA to verify logins. If this happens:
 3. Check your email/SMS for the 6-digit Garmin code.
 4. Enter the code into the dashboard UI.
 5. The thread resumes, caching the session tokens, and processes the paused payload upload successfully.
+
+---
+
+## 🧪 Dry-Run Mode
+
+Use `DRY_RUN=true` when integrating a new client (e.g. openScale+) to verify that your payloads are correctly formed and reaching the service — without sending any data to Garmin Connect.
+
+**What changes in dry-run mode:**
+- Webhook accepts and validates payloads normally (invalid payloads still return `422`).
+- Instead of uploading to Garmin, the payload is written to the log with `status: DryRun`.
+- The dashboard log table shows all received payloads so you can inspect them in real time.
+- Startup session restore is skipped — no Garmin credentials needed.
+- The response body signals `"status": "dry_run"` so your client can detect it.
+
+**Enable via environment variable:**
+```env
+DRY_RUN=true
+```
+
+Or inline with Docker Compose:
+```bash
+DRY_RUN=true docker compose up
+```
+
+**Example response in dry-run mode:**
+```bash
+curl -X POST http://localhost:8000/v1/webhook/garmin \
+  -H "Authorization: Bearer <API_BEARER_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"weight": 80.5, "body_fat": 15.2}'
+
+# Response:
+# {"status":"dry_run","message":"Dry-run mode: payload received and logged, Garmin upload skipped"}
+```
+
+The dashboard log will show an entry like:
+```json
+{
+  "timestamp": "2024-01-15T08:30:00+00:00",
+  "status": "DryRun",
+  "payload": { "weight": 80.5, "body_fat": 15.2, ... },
+  "error": null,
+  "http_code": null
+}
+```
 
 ---
 
