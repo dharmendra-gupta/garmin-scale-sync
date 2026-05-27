@@ -12,6 +12,12 @@ from src.garmin_client import mfa_state, memory_logs, log_attempt
 import src.garmin_client as garmin_client_module
 import src.main as main_module
 
+# Shared valid full payload used across multiple tests
+_FULL_PAYLOAD = {
+    "weight": 80.0, "body_fat": 20.0, "water": 55.0,
+    "bone_mass": 3.0, "lean_body_mass": 64.0
+}
+
 client = TestClient(app)
 
 def get_basic_auth_headers():
@@ -42,6 +48,7 @@ def test_lifespan_starts_login_thread_when_token_file_exists(mock_thread):
 
         with patch("src.main.settings") as mock_settings:
             mock_settings.DATA_DIR = tmpdir
+            mock_settings.DRY_RUN = False
 
             async def run():
                 async with lifespan(app):
@@ -58,6 +65,7 @@ def test_lifespan_skips_login_when_no_token_file(mock_thread):
     with tempfile.TemporaryDirectory() as tmpdir:
         with patch("src.main.settings") as mock_settings:
             mock_settings.DATA_DIR = tmpdir
+            mock_settings.DRY_RUN = False
 
             async def run():
                 async with lifespan(app):
@@ -456,3 +464,80 @@ def test_clear_logs_empties_logs():
     # Verify logs are actually empty after clearing
     response = client.get("/v1/logs", headers=get_basic_auth_headers())
     assert response.json() == []
+
+
+# ---------------------------------------------------------------------------
+# Dry-run mode (DRY_RUN=true) tests
+# ---------------------------------------------------------------------------
+
+def test_webhook_dry_run_returns_dry_run_status(mock_upload_to_garmin):
+    """Dry-run mode returns 201 with status='dry_run' instead of 'accepted'."""
+    with patch.object(settings, "DRY_RUN", True):
+        response = client.post(
+            "/v1/webhook/garmin",
+            headers=get_bearer_headers(),
+            json=_FULL_PAYLOAD,
+        )
+    assert response.status_code == 201
+    assert response.json()["status"] == "dry_run"
+
+
+def test_webhook_dry_run_does_not_call_upload(mock_upload_to_garmin):
+    """Dry-run mode must NOT invoke upload_to_garmin even as a background task."""
+    with patch.object(settings, "DRY_RUN", True):
+        client.post(
+            "/v1/webhook/garmin",
+            headers=get_bearer_headers(),
+            json=_FULL_PAYLOAD,
+        )
+    mock_upload_to_garmin.assert_not_called()
+
+
+def test_webhook_dry_run_logs_payload():
+    """Dry-run mode writes a 'DryRun' log entry with the full received payload."""
+    with patch.object(settings, "DRY_RUN", True):
+        client.post(
+            "/v1/webhook/garmin",
+            headers=get_bearer_headers(),
+            json=_FULL_PAYLOAD,
+        )
+
+    logs = list(memory_logs)
+    assert len(logs) == 1
+    assert logs[0]["status"] == "DryRun"
+    assert logs[0]["payload"]["weight"] == _FULL_PAYLOAD["weight"]
+    assert logs[0]["payload"]["body_fat"] == _FULL_PAYLOAD["body_fat"]
+
+
+def test_webhook_dry_run_still_validates_payload():
+    """Dry-run mode still returns 422 for invalid payloads (validation is not skipped)."""
+    with patch.object(settings, "DRY_RUN", True):
+        response = client.post(
+            "/v1/webhook/garmin",
+            headers=get_bearer_headers(),
+            json={"body_fat": 20.0},  # missing required weight
+        )
+    assert response.status_code == 422
+
+
+@patch("src.main.threading.Thread")
+def test_lifespan_skips_login_in_dry_run_mode(mock_thread):
+    """Startup must NOT restore session when DRY_RUN=true, even if token file exists."""
+    mock_instance = MagicMock()
+    mock_thread.return_value = mock_instance
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        token_file = os.path.join(tmpdir, ".garminconnect")
+        open(token_file, "w").close()
+
+        with patch("src.main.settings") as mock_settings:
+            mock_settings.DATA_DIR = tmpdir
+            mock_settings.DRY_RUN = True
+
+            async def run():
+                async with lifespan(app):
+                    pass
+
+            asyncio.run(run())
+
+    mock_instance.start.assert_not_called()

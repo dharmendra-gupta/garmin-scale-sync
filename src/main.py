@@ -33,10 +33,12 @@ async def lifespan(app: FastAPI):
     """On startup: restore Garmin session from cached tokens if they exist on disk."""
     global login_thread
     token_path = os.path.join(settings.DATA_DIR, ".garminconnect")
-    if os.path.exists(token_path):
+    if not settings.DRY_RUN and os.path.exists(token_path):
         logger.info("Cached Garmin tokens found — restoring session in background.")
         login_thread = threading.Thread(target=run_login_in_background, daemon=True)
         login_thread.start()
+    elif settings.DRY_RUN:
+        logger.info("Dry-run mode enabled — Garmin Connect login skipped.")
     yield
 
 
@@ -272,6 +274,10 @@ async def submit_mfa(payload: MFAPayload):
 async def receive_webhook(payload: BodyCompositionPayload, background_tasks: BackgroundTasks):
     """Webhook ingestion endpoint to queue weight upload to Garmin Connect."""
     logger.info(f"Received webhook weight payload: {payload.weight}kg")
+
+    if settings.DRY_RUN:
+        log_attempt(status="DryRun", payload=payload.model_dump())
+        return {"status": "dry_run", "message": "Dry-run mode: payload received and logged, Garmin upload skipped"}
 
     # Dispatch connection and file upload asynchronously to a background thread
     background_tasks.add_task(
