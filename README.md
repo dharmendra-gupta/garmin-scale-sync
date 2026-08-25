@@ -53,6 +53,11 @@ Designed explicitly with **Raspberry Pi (ARM64)** deployment in mind, this proje
    
    # Dry-run (set to true to log payloads without uploading to Garmin)
    DRY_RUN=false
+
+   # Where the shared Garmin token lives: file | sqlite | postgres
+   # See "Sharing a Garmin account" below before changing this.
+   TOKEN_STORE=file
+   # TOKEN_DB_URL=postgresql://user:password@host/dbname?sslmode=require
    ```
 
 4. Launch the container:
@@ -95,6 +100,57 @@ All body composition fields are optional except `weight`.
 ```
 
 *(Weight, bone mass, and lean body mass are in kilograms. Body fat and water are percentages.)*
+
+### How your fields map to Garmin
+
+Most fields pass straight through, but **lean body mass does not** — Garmin stores
+*skeletal muscle mass*, which excludes bone, whereas most scales report *lean body
+mass*, which includes it. The bridge converts between them:
+
+```
+muscle_mass = lean_body_mass - bone_mass
+```
+
+| Your payload | Garmin field | Conversion |
+|---|---|---|
+| `weight` | `weight` | direct (kg) |
+| `body_fat` | `percent_fat` | direct (%) |
+| `water` | `percent_hydration` | direct (%) |
+| `bone_mass` | `bone_mass` | direct (kg) |
+| `lean_body_mass` | `muscle_mass` | `lean_body_mass - bone_mass` |
+
+If either `lean_body_mass` or `bone_mass` is missing, muscle mass is omitted rather
+than guessed — the other fields still upload.
+
+### Configuring openScale
+
+In openScale, add an HTTP export with this header:
+
+```json
+{
+  "Authorization": "Bearer <your API_BEARER_TOKEN>",
+  "Content-Type": "application/json"
+}
+```
+
+and this body, where the capitalised words are openScale's own placeholder
+variables (it substitutes the real measurement at send time):
+
+```json
+{
+  "weight": "WEIGHT",
+  "body_fat": "FAT",
+  "water": "WATER",
+  "bone_mass": "BONE",
+  "lean_body_mass": "LBM",
+  "date": "DATE_yyyy-mm-dd",
+  "time": "HH:mm:ss",
+  "timezone": "TIMEZONE_xxx"
+}
+```
+
+Set `DRY_RUN=true` the first time so you can confirm the payload arrives correctly
+before anything reaches Garmin.
 
 ### Datetime Fields
 
@@ -234,22 +290,54 @@ The dashboard log will show an entry like:
 
 ---
 
+## 🔑 Sharing a Garmin account with other services
+
+**Read this before running a second service against the same Garmin account.**
+
+Garmin issues a **new refresh token every time one is refreshed** and invalidates
+the previous one. Your account therefore has exactly **one valid refresh token at
+any moment**, no matter how many services use it.
+
+That has a consequence that is easy to get wrong: if two services each keep their
+own copy of the token, whichever refreshes second is holding a token Garmin has
+already replaced. It gets a `401`, falls back to a full credential login, and in
+doing so invalidates the *other* service's token. They then take turns locking
+each other out, while the repeated logins hit Garmin's SSO rate limit — which is
+applied per IP and per account, and can affect the Garmin Connect mobile app too.
+
+The fix is that every service must read and write **the same token store**:
+
+| `TOKEN_STORE` | Where the token lives | Use when |
+|---|---|---|
+| `file` (default) | `$DATA_DIR/.garminconnect/garmin_tokens.json` | services share a host and a bind mount |
+| `sqlite` | `$DATA_DIR/garmin_tokens.db` | services share a host; real write locking |
+| `postgres` | `TOKEN_DB_URL` | **services run on different hosts** |
+
+Writes are atomic and guarded by a lock, so concurrent access is safe. `sqlite` is
+same-host only — its locking is unreliable over NFS/SMB. `postgres` needs no shared
+filesystem, so it is the option that lets services run on separate machines.
+
+> ⚠️ **All services must use the same setting and the same database.** Pointing one
+> at `postgres` while another still reads the JSON file silently splits them onto
+> separate sessions, and they resume invalidating each other.
+
 ## 🏗 Development & Testing
 
-### Running Tests (Docker)
-All tests run inside Docker to match the production environment exactly.
+All tests run inside Docker to match the production environment exactly. The
+`Dockerfile` is multi-stage: the default (`runtime`) image ships no test tooling,
+so tests run against the `test` target.
+
 ```bash
-docker compose build
-docker compose run --rm garmin-scale-sync pytest src/tests/ -v
+docker build --target test -t gss:test .
+docker run --rm --env-file .env gss:test pytest src/tests/ -n auto -v
 ```
 
-### Running Locally (Without Docker)
+To iterate without rebuilding, mount `src/` into a long-lived container:
+
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env # edit your credentials
-python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+docker run -d --name gss_dev -v "$PWD/src:/app/src" --env-file .env gss:test sleep infinity
+docker exec gss_dev pytest src/tests/ -n auto -q
+docker rm -f gss_dev
 ```
 
 ---

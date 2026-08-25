@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from src.config import settings
 from garminconnect import GarminConnectAuthenticationError
 from src.garmin_client import (
-    upload_to_garmin, get_garmin_client, mfa_state, log_attempt,
+    upload_to_garmin, session, mfa_state, log_attempt,
     get_recent_logs, clear_recent_logs
 )
 import src.garmin_client as garmin_client
@@ -30,15 +30,14 @@ login_error_detail = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """On startup: restore Garmin session from cached tokens if they exist on disk."""
+    """On startup: restore the Garmin session from the shared token store."""
     global login_thread
-    token_path = os.path.join(settings.DATA_DIR, ".garminconnect")
-    if not settings.DRY_RUN and os.path.exists(token_path):
-        logger.info("Cached Garmin tokens found — restoring session in background.")
+    if settings.DRY_RUN:
+        logger.info("Dry-run mode enabled — Garmin Connect login skipped.")
+    elif session.has_stored_tokens():
+        logger.info("Shared Garmin token store populated — restoring session in background.")
         login_thread = threading.Thread(target=run_login_in_background, daemon=True)
         login_thread.start()
-    elif settings.DRY_RUN:
-        logger.info("Dry-run mode enabled — Garmin Connect login skipped.")
     yield
 
 
@@ -153,7 +152,7 @@ def run_login_in_background():
     global login_error_detail
     login_error_detail = None
     try:
-        get_garmin_client()
+        session.warm()
         logger.info("Background Garmin Connect session established successfully.")
     except GarminConnectAuthenticationError as e:
         login_error_detail = "Garmin Connect session expired or credentials invalid. Please re-login on your bridge server dashboard."
@@ -167,8 +166,7 @@ def check_auth_status():
     if mfa_state["waiting"]:
         return {"status": "mfa_required", "message": "Multi-Factor Authentication code required."}
 
-    # Use the singleton client instance as the authoritative authenticated signal
-    if garmin_client._garmin_client_instance is not None:
+    if session.is_authenticated:
         return {"status": "authenticated", "message": "Garmin Connect session active."}
 
     if login_thread and login_thread.is_alive():
@@ -204,7 +202,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
     return JSONResponse(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content={"detail": error_detail}
     )
 
@@ -265,7 +263,7 @@ async def submit_mfa(payload: MFAPayload):
     stripped_code = payload.code.strip()
     if not stripped_code:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="MFA code cannot be empty."
         )
 

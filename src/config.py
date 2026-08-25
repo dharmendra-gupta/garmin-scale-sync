@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -14,8 +15,16 @@ class Settings(BaseSettings):
     
     HOST: str = "0.0.0.0"
     PORT: int = 8000
-    
+
     DATA_DIR: str = "/app/data"
+
+    # Where the shared Garmin refresh token lives. Defaults to "file" because
+    # the other services on this account read garmin_tokens.json directly —
+    # switching this service alone to sqlite/postgres would stop it sharing a
+    # token with them, which is worse than the problem being fixed. Move the
+    # whole fleet together.
+    TOKEN_STORE: str = "file"
+    TOKEN_DB_URL: Optional[str] = None
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

@@ -14,6 +14,12 @@ from garminconnect import (
     GarminConnectTooManyRequestsError,
 )
 from src.config import settings
+from src.garmin_session import (
+    FileTokenStore,
+    GarminSession,
+    PostgresTokenStore,
+    SqliteTokenStore,
+)
 
 logger = logging.getLogger("garmin_scale_sync")
 
@@ -31,9 +37,22 @@ mfa_state = {
 # In-memory log ring buffer (maxlen=50) used when PERSIST_LOGS=False
 memory_logs: deque = deque(maxlen=50)
 
-# Singleton Garmin client — avoids a redundant token-refresh network call on every upload
-_garmin_client_instance: Optional[Garmin] = None
-garmin_client_lock = threading.Lock()
+
+def _build_token_store():
+    """Select the shared-token backend. See Settings.TOKEN_STORE on why this
+    defaults to the file store."""
+    kind = (settings.TOKEN_STORE or "file").strip().lower()
+    if kind == "file":
+        return FileTokenStore(os.path.join(settings.DATA_DIR, ".garminconnect"))
+    if kind == "sqlite":
+        return SqliteTokenStore(os.path.join(settings.DATA_DIR, "garmin_tokens.db"))
+    if kind == "postgres":
+        if not settings.TOKEN_DB_URL:
+            raise ValueError("TOKEN_STORE=postgres requires TOKEN_DB_URL to be set.")
+        return PostgresTokenStore(settings.TOKEN_DB_URL)
+    raise ValueError(
+        f"Unknown TOKEN_STORE '{settings.TOKEN_STORE}'. Use file, sqlite, or postgres."
+    )
 
 
 def prompt_mfa_callback() -> str:
@@ -54,6 +73,18 @@ def prompt_mfa_callback() -> str:
     else:
         logger.error("Garmin Connect MFA input timed out or was cancelled by the user.")
         raise Exception("MFA input timed out or was cancelled.")
+
+
+# The single entry point to Garmin. Re-reads the shared token store before every
+# use and republishes rotations, so a peer service refreshing the account's one
+# valid refresh token no longer strands this process.
+session = GarminSession(
+    store=_build_token_store(),
+    scratch_dir=os.path.join(settings.DATA_DIR, ".session_scratch"),
+    email=settings.GARMIN_EMAIL,
+    password=settings.GARMIN_PASSWORD,
+    prompt_mfa=prompt_mfa_callback,
+)
 
 
 def log_attempt(status: str, payload: dict, error_detail: str = None, http_code: int = None):
@@ -131,35 +162,6 @@ def clear_recent_logs():
                 logger.error(f"Failed to clear persistent logs: {e}")
 
 
-def get_garmin_client() -> Garmin:
-    """Returns the cached Garmin Connect client, creating and logging in only once (thread-safe)."""
-    global _garmin_client_instance
-    if _garmin_client_instance is not None:
-        return _garmin_client_instance
-
-    with garmin_client_lock:
-        # Double-checked locking
-        if _garmin_client_instance is not None:
-            return _garmin_client_instance
-
-        logger.info("Initializing connection to Garmin Connect...")
-        client = Garmin(
-            email=settings.GARMIN_EMAIL,
-            password=settings.GARMIN_PASSWORD,
-            prompt_mfa=prompt_mfa_callback
-        )
-        client.login()
-        _garmin_client_instance = client
-        return _garmin_client_instance
-
-
-def reset_garmin_client():
-    """Resets the cached Garmin client singleton, forcing re-authentication on next call."""
-    global _garmin_client_instance
-    with garmin_client_lock:
-        _garmin_client_instance = None
-
-
 def _parse_offset_tz(tz_str: str) -> timezone:
     """Parse a UTC offset string into a timezone object.
 
@@ -231,25 +233,26 @@ def upload_to_garmin(
         else:
             logger.info("Muscle mass calculation skipped: missing lean mass or bone mass.")
 
-        client = get_garmin_client()
-
         timestamp = build_timestamp(date, time, tz) if date and time else datetime.now(timezone.utc).isoformat()
         logger.info(f"Uploading body composition data to Garmin Connect (timestamp: {timestamp})...")
-        client.add_body_composition(
-            timestamp=timestamp,
-            weight=weight,
-            percent_fat=fat,
-            percent_hydration=water,
-            bone_mass=bone,
-            muscle_mass=muscle_mass
-        )
+
+        with session.client() as client:
+            client.add_body_composition(
+                timestamp=timestamp,
+                weight=weight,
+                percent_fat=fat,
+                percent_hydration=water,
+                bone_mass=bone,
+                muscle_mass=muscle_mass
+            )
         logger.info("Garmin Connect upload process completed successfully.")
 
         log_attempt(status="Success", payload=payload)
 
     except GarminConnectAuthenticationError as e:
-        logger.warning(f"Garmin session expired or credentials invalid: {e}. Resetting client.")
-        reset_garmin_client()
+        # The session has already dropped the rejected client, so the next
+        # upload rebuilds from whatever the shared store currently holds.
+        logger.warning(f"Garmin session rejected: {e}. Cached client discarded.")
         log_attempt(
             status="Failed",
             payload=payload,

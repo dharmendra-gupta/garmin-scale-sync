@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -14,8 +14,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code (will be created in subsequent steps)
 COPY src/ ./src/
+
+# Test stage: adds pytest and friends on top of the runtime image, so tests run
+# against exactly the dependency set that ships. CI builds this target.
+#   docker build --target test -t gss:test .
+FROM base AS test
+
+COPY requirements-dev.txt .
+RUN pip install --no-cache-dir -r requirements-dev.txt
+
+# Runtime stage. Last stage, so a plain `docker build .` produces this — without
+# any test tooling.
+FROM base AS runtime
 
 EXPOSE 8000
 
