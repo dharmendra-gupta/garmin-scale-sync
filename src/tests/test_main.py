@@ -2,15 +2,15 @@ import asyncio
 import base64
 import os
 import tempfile
-import pytest
-from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from src.config import settings
-from src.main import app, lifespan
-from src.garmin_client import mfa_state, memory_logs, log_attempt
+from fastapi.testclient import TestClient
+
 import src.garmin_client as garmin_client_module
 import src.main as main_module
+from src.config import settings
+from src.garmin_client import log_attempt, memory_logs, mfa_state
+from src.main import app, lifespan
 
 # Shared valid full payload used across multiple tests
 _FULL_PAYLOAD = {

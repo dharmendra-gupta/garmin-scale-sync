@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   garmin-scale-sync:
     build: .
@@ -11,3 +9,36 @@ services:
       - ./data:/app/data
     env_file:
       - .env
+
+  # Tooling — not started by `docker compose up`, run explicitly:
+  #   docker compose run --rm test
+  #   docker compose run --rm lint
+  # Both build the `test` stage (the default image ships no pytest/ruff) and
+  # bind-mount src/ and tests/, so edits take effect without a rebuild and
+  # `ruff --fix` changes persist on the host instead of dying with the container.
+  test:
+    build:
+      context: .
+      target: test
+    profiles: ["tools"]
+    environment:
+      # Settings are required at import time; the suite never reaches Garmin.
+      GARMIN_EMAIL: test@example.com
+      GARMIN_PASSWORD: testpass
+      API_BEARER_TOKEN: testtoken
+      API_BASIC_AUTH_USERNAME: admin
+      API_BASIC_AUTH_PASSWORD: adminpass
+    volumes:
+      - ./src:/app/src
+    # -n auto: tests are independent, so xdist fans them across all cores.
+    entrypoint: ["python", "-m", "pytest", "src/tests/", "-n", "auto", "-v"]
+
+  lint:
+    build:
+      context: .
+      target: test
+    profiles: ["tools"]
+    volumes:
+      - ./src:/app/src
+      - ./pyproject.toml:/app/pyproject.toml
+    entrypoint: ["ruff", "check", "src"]

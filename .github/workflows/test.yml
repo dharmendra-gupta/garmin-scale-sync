@@ -31,6 +31,9 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
+    - name: Run ruff inside Docker
+      run: docker run --rm garmin-scale-sync:ci ruff check src
+
     - name: Run pytest inside Docker
       run: |
         docker run --rm \

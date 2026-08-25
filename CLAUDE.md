@@ -5,33 +5,33 @@ FastAPI bridge: openScale (or any client) POSTs a body-composition payload to
 
 ## Guardrails — non-negotiable
 
-**1. Never assume.** Verify before asserting. Read the installed library source
-(`docker run --rm gss:dev python -c "import inspect, garminconnect; ..."`), not
-your memory of it — this repo has been bitten by exactly that. Cite `file:line`.
-If you could not verify something, say so explicitly instead of implying you did.
+**1. Never assume.** Verify before asserting — read the installed library source,
+not your memory of it; this repo has been bitten by exactly that. Cite `file:line`.
+If you could not verify something, say so instead of implying you did.
 
 **2. Strict TDD.** Write the failing test first and *watch it fail* for the right
-reason. Then implement. A guard test that cannot fail is worse than no test — when
-adding one, prove it by injecting the violation and seeing red before you trust it.
+reason, then implement. A guard test that cannot fail is worse than none — prove a
+new one by injecting the violation and seeing red first.
 
 **3. Everything runs in Docker.** No local `python`, `pip`, or `pytest`. The app,
 tests, lint and one-off investigations all run in a container. CI does the same.
 
-**4. Reuse one container.** Do not spin up a fresh container per command during
-testing or investigation. Start `gss:dev` once, `docker exec` into it repeatedly.
-Rebuild only when `requirements.txt` changes. See `ai-docs/testing.md`.
+**4. Reuse one container.** Don't spin up a fresh container per command while
+testing or investigating — start one, `docker exec` into it repeatedly, and rebuild
+only when dependencies change. See `ai-docs/testing.md`.
 
 ## Commands
 
 ```bash
-docker build --target test -t gss:dev .       # rebuild only on dependency change
-docker run -d --name gss_dev -v "$PWD/src:/app/src" --env-file .env gss:dev
-docker exec gss_dev pytest src/tests/ -n auto -q      # iterate: source is mounted
-docker exec gss_dev pytest src/tests/test_x.py -q     # single file
+docker compose run --rm test      # full suite, parallel (pytest-xdist -n auto)
+docker compose run --rm lint      # ruff check (src/ is mounted, so --fix persists)
+
+# Single file:
+docker compose run --rm --entrypoint python test -m pytest src/tests/test_x.py -q
 ```
 
-Tests need `GARMIN_EMAIL`, `GARMIN_PASSWORD`, `API_BEARER_TOKEN`,
-`API_BASIC_AUTH_PASSWORD`; dummy values are fine (see `.github/workflows/test.yml`).
+Lint is `ruff` (`pyproject.toml`); CI runs it before pytest. Tests are independent
+and run under `-n auto` — keep them so: no shared on-disk state, use `tmp_path`.
 
 ## Layout
 
@@ -40,7 +40,7 @@ src/config.py           pydantic-settings; all env vars
 src/main.py             FastAPI routes, auth deps, lifespan
 src/garmin_client.py    upload_to_garmin, MFA callback, logging, store selection
 src/garmin_session/     shared-token session — see ai-docs/shared-token-store.md
-src/tests/              pytest; conftest resets shared state between tests
+src/tests/              pytest; conftest resets shared state per test
 ```
 
 ## Critical context
