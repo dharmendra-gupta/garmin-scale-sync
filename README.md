@@ -101,6 +101,57 @@ All body composition fields are optional except `weight`.
 
 *(Weight, bone mass, and lean body mass are in kilograms. Body fat and water are percentages.)*
 
+### How your fields map to Garmin
+
+Most fields pass straight through, but **lean body mass does not** — Garmin stores
+*skeletal muscle mass*, which excludes bone, whereas most scales report *lean body
+mass*, which includes it. The bridge converts between them:
+
+```
+muscle_mass = lean_body_mass - bone_mass
+```
+
+| Your payload | Garmin field | Conversion |
+|---|---|---|
+| `weight` | `weight` | direct (kg) |
+| `body_fat` | `percent_fat` | direct (%) |
+| `water` | `percent_hydration` | direct (%) |
+| `bone_mass` | `bone_mass` | direct (kg) |
+| `lean_body_mass` | `muscle_mass` | `lean_body_mass - bone_mass` |
+
+If either `lean_body_mass` or `bone_mass` is missing, muscle mass is omitted rather
+than guessed — the other fields still upload.
+
+### Configuring openScale
+
+In openScale, add an HTTP export with this header:
+
+```json
+{
+  "Authorization": "Bearer <your API_BEARER_TOKEN>",
+  "Content-Type": "application/json"
+}
+```
+
+and this body, where the capitalised words are openScale's own placeholder
+variables (it substitutes the real measurement at send time):
+
+```json
+{
+  "weight": "WEIGHT",
+  "body_fat": "FAT",
+  "water": "WATER",
+  "bone_mass": "BONE",
+  "lean_body_mass": "LBM",
+  "date": "DATE_yyyy-mm-dd",
+  "time": "HH:mm:ss",
+  "timezone": "TIMEZONE_xxx"
+}
+```
+
+Set `DRY_RUN=true` the first time so you can confirm the payload arrives correctly
+before anything reaches Garmin.
+
 ### Datetime Fields
 
 `date`, `time`, and `timezone` are all optional. When omitted, the upload is timestamped at the current UTC time.

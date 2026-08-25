@@ -50,6 +50,15 @@ library internals move between versions.
   moved behind `fastapi[standard]`. Plain `fastapi` is slim — confirmed absent
   from the runtime image. Do not re-add them without a reason.
 
+## Project constraints
+
+- **Python 3.12 minimum** — required by `garminconnect>=0.3.3`.
+- **Deployment target is a Raspberry Pi**, so the image stays on `python:*-slim`
+  and low-memory: don't add heavyweight dependencies without a reason. `publish.yml`
+  builds `linux/amd64` + `linux/arm64`.
+- **No `garth` or other obsolete auth libraries** — an explicit project requirement
+  from the outset, enforced by `src/tests/test_no_garth_access.py`.
+
 ## Postgres / Neon
 
 - **Use `pg_advisory_xact_lock`, not `pg_advisory_lock`.** Neon's pooled endpoint

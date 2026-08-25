@@ -20,6 +20,19 @@ shows as a non-2xx to the client — it is only visible in `/v1/logs` and stdout
 is deliberate (the scale client should not retry), but it means *upload failures are
 silent to the caller*, which is why the logging in `log_attempt()` matters.
 
+## Field translation
+
+Garmin stores *skeletal* muscle mass (bone excluded); scales report *lean body
+mass* (bone included). `upload_to_garmin` converts:
+
+```
+muscle_mass = lean_body_mass - bone_mass
+```
+
+Everything else passes through (`body_fat`→`percent_fat`, `water`→
+`percent_hydration`). If either input is missing, muscle mass is omitted rather
+than guessed — see the table in `README.md`.
+
 ## Auth model
 
 Two independent schemes, both in `main.py`:
