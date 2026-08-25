@@ -3,12 +3,30 @@
 ## Everything runs in Docker
 
 No local `python`, `pip`, or `pytest`. CI does the same thing
-(`.github/workflows/test.yml`): build the image, then `docker run … pytest`.
+(`.github/workflows/test.yml`): build the `test` stage, run `ruff`, then `pytest`.
+
+```bash
+docker compose run --rm test      # full suite, parallel
+docker compose run --rm lint      # ruff check
+```
+
+Both bind-mount `src/`, so edits apply without a rebuild and `ruff --fix` changes
+persist on the host rather than dying with the container.
+
+## Tests run in parallel
+
+`-n auto` (pytest-xdist) fans tests across all cores; each worker is a separate
+process. Tests must therefore share no on-disk state — use `tmp_path` or
+`tempfile`, never a fixed path. `conftest.py`'s autouse fixture resets in-process
+state (`mfa_state`, the session, the log deque, `main`'s login globals), which is
+per-worker and so safe.
+
+Verified equivalent: 92 passed both under `-n auto` and `-p no:xdist`.
 
 ## Reuse one container
 
-Do **not** `docker run --rm` a fresh container per command while iterating. Start
-one and exec into it. Mount `src/` so code edits take effect without rebuilding:
+For anything the compose services don't cover, start one container and exec into
+it rather than running a fresh one per command:
 
 ```bash
 docker build --target test -t gss:dev .         # only when requirements change
@@ -49,8 +67,7 @@ docker exec gss_dev sh -c \
    src/garmin_session/session.py && pytest src/tests/test_garmin_session.py -q"
 ```
 
-Both must go red. Restart the container afterwards to discard the edits (or don't
-mount `src/` for these).
+Both must go red; revert the edits afterwards (`git checkout src/`).
 
 ## Never assume
 
@@ -62,7 +79,7 @@ Before bumping it, probe the internals `garmin_session/errors.py` relies on
 mock `Garmin`, so a rename would pass tests and break only in production.
 
 ```bash
-docker exec gss_dev python -c "
+docker compose run --rm --entrypoint python test -c "
 import inspect, garminconnect.client as c
 print(inspect.getsource(c.Client._run_request))"
 ```
@@ -80,5 +97,4 @@ body-composition entry that is tedious to delete.
 
 ## Current state
 
-92 tests, all passing. `src/tests/conftest.py` resets `mfa_state`, the session, the
-in-memory log deque, and `main`'s login-thread globals before and after each test.
+92 tests passing, ruff clean.

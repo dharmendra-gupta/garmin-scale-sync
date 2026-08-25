@@ -6,3 +6,4 @@
 pytest==9.1.1
 pytest-xdist==3.8.0
 httpx==0.28.1  # required by fastapi.testclient.TestClient
+ruff==0.16.4

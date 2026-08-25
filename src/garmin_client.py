@@ -1,18 +1,18 @@
-import os
 import json
 import logging
+import os
 import re
 import threading
 from collections import deque
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+from datetime import UTC, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from garminconnect import (
-    Garmin,
     GarminConnectAuthenticationError,
     GarminConnectConnectionError,
     GarminConnectTooManyRequestsError,
 )
+
 from src.config import settings
 from src.garmin_session import (
     FileTokenStore,
@@ -89,7 +89,7 @@ session = GarminSession(
 
 def log_attempt(status: str, payload: dict, error_detail: str = None, http_code: int = None):
     """Logs the results of weight upload attempts and payload validation errors."""
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
 
     # Standard output logging for docker logs capture
     log_msg = f"Sync Status: {status} | Payload: {payload}"
@@ -119,7 +119,7 @@ def log_attempt(status: str, payload: dict, error_detail: str = None, http_code:
             logs = []
             if os.path.exists(LOGS_FILE):
                 try:
-                    with open(LOGS_FILE, "r", encoding="utf-8") as f:
+                    with open(LOGS_FILE, encoding="utf-8") as f:
                         logs = json.load(f)
                 except Exception as e:
                     logger.error(f"Failed to read existing logs: {e}")
@@ -143,7 +143,7 @@ def get_recent_logs() -> list:
     with log_lock:
         if settings.PERSIST_LOGS and os.path.exists(LOGS_FILE):
             try:
-                with open(LOGS_FILE, "r", encoding="utf-8") as f:
+                with open(LOGS_FILE, encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"Failed to read persistent logs: {e}")
@@ -169,7 +169,7 @@ def _parse_offset_tz(tz_str: str) -> timezone:
     """
     offset_str = tz_str.removeprefix("UTC")
     if offset_str.upper() in ("Z", ""):
-        return timezone.utc
+        return UTC
     # Normalise compact form (+0530) to colon form (+05:30)
     m = re.fullmatch(r'([+-])(\d{2})(\d{2})', offset_str)
     if m:
@@ -188,7 +188,7 @@ def _parse_offset_tz(tz_str: str) -> timezone:
     return timezone(timedelta(minutes=total))
 
 
-def build_timestamp(date: str, time: str, tz_str: Optional[str] = None) -> str:
+def build_timestamp(date: str, time: str, tz_str: str | None = None) -> str:
     """Combines date, time, and optional timezone into a UTC ISO 8601 timestamp.
 
     Garmin Connect's API interprets all timestamps as UTC, so the local time is
@@ -196,24 +196,24 @@ def build_timestamp(date: str, time: str, tz_str: Optional[str] = None) -> str:
     """
     naive_dt = datetime.fromisoformat(f"{date}T{time}")
     if tz_str is None:
-        aware_dt = naive_dt.replace(tzinfo=timezone.utc)
+        aware_dt = naive_dt.replace(tzinfo=UTC)
     else:
         try:
             aware_dt = naive_dt.replace(tzinfo=ZoneInfo(tz_str))
         except ZoneInfoNotFoundError:
             aware_dt = naive_dt.replace(tzinfo=_parse_offset_tz(tz_str))
-    return aware_dt.astimezone(timezone.utc).isoformat()
+    return aware_dt.astimezone(UTC).isoformat()
 
 
 def upload_to_garmin(
     weight: float,
-    fat: Optional[float] = None,
-    water: Optional[float] = None,
-    bone: Optional[float] = None,
-    lean_mass: Optional[float] = None,
-    date: Optional[str] = None,
-    time: Optional[str] = None,
-    tz: Optional[str] = None,
+    fat: float | None = None,
+    water: float | None = None,
+    bone: float | None = None,
+    lean_mass: float | None = None,
+    date: str | None = None,
+    time: str | None = None,
+    tz: str | None = None,
 ):
     """Executes asynchronous background connection and payload push to Garmin Connect."""
     payload = {
@@ -233,7 +233,7 @@ def upload_to_garmin(
         else:
             logger.info("Muscle mass calculation skipped: missing lean mass or bone mass.")
 
-        timestamp = build_timestamp(date, time, tz) if date and time else datetime.now(timezone.utc).isoformat()
+        timestamp = build_timestamp(date, time, tz) if date and time else datetime.now(UTC).isoformat()
         logger.info(f"Uploading body composition data to Garmin Connect (timestamp: {timestamp})...")
 
         with session.client() as client:
@@ -256,7 +256,10 @@ def upload_to_garmin(
         log_attempt(
             status="Failed",
             payload=payload,
-            error_detail="Garmin Connect session expired or credentials invalid. Please re-login on your bridge server dashboard.",
+            error_detail=(
+                "Garmin Connect session expired or credentials invalid. "
+                "Please re-login on your bridge server dashboard."
+            ),
             http_code=401
         )
     except GarminConnectTooManyRequestsError as e:

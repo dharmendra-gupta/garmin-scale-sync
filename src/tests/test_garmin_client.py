@@ -1,19 +1,24 @@
-import os
 import json
+import os
 import tempfile
-import pytest
 import threading
 from contextlib import contextmanager
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from garminconnect import GarminConnectAuthenticationError, GarminConnectTooManyRequestsError, GarminConnectConnectionError
+import pytest
+from garminconnect import GarminConnectAuthenticationError, GarminConnectConnectionError, GarminConnectTooManyRequestsError
+
 import src.garmin_client as garmin_client_module
 from src.garmin_client import (
-    mfa_state, memory_logs, prompt_mfa_callback, upload_to_garmin,
-    get_recent_logs, clear_recent_logs, log_attempt,
     build_timestamp,
+    clear_recent_logs,
+    get_recent_logs,
+    log_attempt,
+    memory_logs,
+    mfa_state,
+    prompt_mfa_callback,
+    upload_to_garmin,
 )
-
 
 # ---------------------------------------------------------------------------
 # build_timestamp tests
@@ -101,9 +106,9 @@ def test_mfa_callback_success():
 
 def test_mfa_callback_timeout():
     """Test that the MFA callback raises an exception on timeout."""
-    with patch.object(mfa_state["event"], "wait", return_value=False):
-        with pytest.raises(Exception, match="MFA input timed out or was cancelled."):
-            prompt_mfa_callback()
+    with patch.object(mfa_state["event"], "wait", return_value=False), \
+         pytest.raises(Exception, match="MFA input timed out or was cancelled."):
+        prompt_mfa_callback()
 
     assert mfa_state["waiting"] is False
 
@@ -309,7 +314,7 @@ def test_log_attempt_writes_to_disk_when_persist_true():
             log_attempt(status="Failed", payload={"weight": 60.0}, error_detail="timeout", http_code=504)
 
         assert os.path.exists(logs_file)
-        with open(logs_file, "r") as f:
+        with open(logs_file) as f:
             disk_logs = json.load(f)
 
         assert len(disk_logs) == 1
@@ -346,5 +351,5 @@ def test_clear_recent_logs_clears_disk_when_persist_true():
             mock_settings.PERSIST_LOGS = True
             clear_recent_logs()
 
-        with open(logs_file, "r") as f:
+        with open(logs_file) as f:
             assert json.load(f) == []

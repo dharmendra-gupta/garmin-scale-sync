@@ -1,18 +1,19 @@
 import os
-from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     GARMIN_EMAIL: str
     GARMIN_PASSWORD: str
     API_BEARER_TOKEN: str
-    
+
     API_BASIC_AUTH_USERNAME: str = "admin"
     API_BASIC_AUTH_PASSWORD: str
-    
+
     PERSIST_LOGS: bool = False
     DRY_RUN: bool = False
-    
+
     HOST: str = "0.0.0.0"
     PORT: int = 8000
 
@@ -24,7 +25,7 @@ class Settings(BaseSettings):
     # token with them, which is worse than the problem being fixed. Move the
     # whole fleet together.
     TOKEN_STORE: str = "file"
-    TOKEN_DB_URL: Optional[str] = None
+    TOKEN_DB_URL: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

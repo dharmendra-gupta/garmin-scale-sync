@@ -24,6 +24,9 @@ FROM base AS test
 COPY requirements-dev.txt .
 RUN pip install --no-cache-dir -r requirements-dev.txt
 
+# ruff reads its config from here.
+COPY pyproject.toml .
+
 # Runtime stage. Last stage, so a plain `docker build .` produces this — without
 # any test tooling.
 FROM base AS runtime

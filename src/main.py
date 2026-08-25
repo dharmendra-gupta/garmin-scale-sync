@@ -1,23 +1,20 @@
-import os
 import json
 import logging
+import os
 import secrets
 import threading
 from contextlib import asynccontextmanager
-from typing import Optional
-from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException, status, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.exceptions import RequestValidationError
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials
 from datetime import datetime
-from pydantic import BaseModel, Field, field_validator, model_validator
-from src.config import settings
+
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials, HTTPBearer
 from garminconnect import GarminConnectAuthenticationError
-from src.garmin_client import (
-    upload_to_garmin, session, mfa_state, log_attempt,
-    get_recent_logs, clear_recent_logs
-)
-import src.garmin_client as garmin_client
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from src.config import settings
+from src.garmin_client import clear_recent_logs, get_recent_logs, log_attempt, mfa_state, session, upload_to_garmin
 
 # Logging Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -50,27 +47,30 @@ security_basic = HTTPBasic()
 # Input schemas
 class BodyCompositionPayload(BaseModel):
     weight: float = Field(..., description="Weight in kg")
-    body_fat: Optional[float] = Field(None, description="Body fat percentage in %")
-    water: Optional[float] = Field(None, description="Body hydration percentage in %")
-    bone_mass: Optional[float] = Field(None, description="Bone mass in kg")
-    lean_body_mass: Optional[float] = Field(None, description="Lean body mass in kg")
-    date: Optional[str] = Field(None, description="Measurement date in YYYY-MM-DD format")
-    time: Optional[str] = Field(None, description="Measurement time in HH:MM or HH:MM:SS format")
-    timezone: Optional[str] = Field(None, description="Timezone as IANA name (e.g. 'America/New_York') or UTC offset (e.g. '+05:30')")
+    body_fat: float | None = Field(None, description="Body fat percentage in %")
+    water: float | None = Field(None, description="Body hydration percentage in %")
+    bone_mass: float | None = Field(None, description="Bone mass in kg")
+    lean_body_mass: float | None = Field(None, description="Lean body mass in kg")
+    date: str | None = Field(None, description="Measurement date in YYYY-MM-DD format")
+    time: str | None = Field(None, description="Measurement time in HH:MM or HH:MM:SS format")
+    timezone: str | None = Field(
+        None,
+        description="Timezone as IANA name (e.g. 'America/New_York') or UTC offset (e.g. '+05:30')",
+    )
 
     @field_validator('date')
     @classmethod
-    def validate_date(cls, v: Optional[str]) -> Optional[str]:
+    def validate_date(cls, v: str | None) -> str | None:
         if v is not None:
             try:
                 datetime.strptime(v, '%Y-%m-%d')
-            except ValueError:
-                raise ValueError("Date must be in YYYY-MM-DD format.")
+            except ValueError as e:
+                raise ValueError("Date must be in YYYY-MM-DD format.") from e
         return v
 
     @field_validator('time')
     @classmethod
-    def validate_time(cls, v: Optional[str]) -> Optional[str]:
+    def validate_time(cls, v: str | None) -> str | None:
         if v is not None:
             for fmt in ('%H:%M:%S', '%H:%M'):
                 try:
@@ -83,10 +83,10 @@ class BodyCompositionPayload(BaseModel):
 
     @field_validator('timezone')
     @classmethod
-    def validate_timezone(cls, v: Optional[str]) -> Optional[str]:
+    def validate_timezone(cls, v: str | None) -> str | None:
         if v is not None:
-            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
             import re
+            from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
             try:
                 ZoneInfo(v)
                 return v
@@ -155,7 +155,10 @@ def run_login_in_background():
         session.warm()
         logger.info("Background Garmin Connect session established successfully.")
     except GarminConnectAuthenticationError as e:
-        login_error_detail = "Garmin Connect session expired or credentials invalid. Please re-login on your bridge server dashboard."
+        login_error_detail = (
+            "Garmin Connect session expired or credentials invalid. "
+            "Please re-login on your bridge server dashboard."
+        )
         logger.error(f"Background Garmin Connect authentication failed: {e}")
     except Exception as e:
         login_error_detail = str(e)
@@ -217,13 +220,13 @@ async def serve_dashboard():
             detail="Dashboard UI template index.html not found."
         )
     try:
-        with open(template_path, "r", encoding="utf-8") as f:
+        with open(template_path, encoding="utf-8") as f:
             return f.read()
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to read UI template: {e}"
-        )
+        ) from e
 
 @app.get("/v1/auth/status", dependencies=[Depends(verify_basic_auth)])
 async def get_status():
@@ -259,7 +262,7 @@ async def submit_mfa(payload: MFAPayload):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No active Garmin Connect MFA authentication session is waiting."
         )
-    
+
     stripped_code = payload.code.strip()
     if not stripped_code:
         raise HTTPException(
@@ -304,7 +307,7 @@ async def get_logs():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to read logs: {e}"
-        )
+        ) from e
 
 @app.post("/v1/logs/clear", dependencies=[Depends(verify_basic_auth)])
 async def clear_logs():
@@ -315,5 +318,5 @@ async def clear_logs():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to clear logs: {e}"
-        )
+        ) from e
     return {"status": "success", "message": "Diagnostic logs successfully cleared."}

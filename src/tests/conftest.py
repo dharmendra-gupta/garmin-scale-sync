@@ -1,5 +1,7 @@
-import pytest
 from unittest.mock import patch
+
+import pytest
+
 import src.garmin_client as garmin_client
 import src.main as main_module
 
