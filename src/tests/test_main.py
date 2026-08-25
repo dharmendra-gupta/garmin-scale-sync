@@ -37,41 +37,37 @@ def get_bearer_headers():
 # ---------------------------------------------------------------------------
 
 @patch("src.main.threading.Thread")
-def test_lifespan_starts_login_thread_when_token_file_exists(mock_thread):
-    """Test that startup auto-restores session when a cached token file is present."""
+def test_lifespan_starts_login_thread_when_store_has_tokens(mock_thread):
+    """Test that startup auto-restores the session when the shared token store
+    already holds a token."""
     mock_instance = MagicMock()
     mock_thread.return_value = mock_instance
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        token_file = os.path.join(tmpdir, ".garminconnect")
-        open(token_file, "w").close()
+    with patch("src.main.settings") as mock_settings, \
+         patch.object(garmin_client_module.session, "has_stored_tokens", return_value=True):
+        mock_settings.DRY_RUN = False
 
-        with patch("src.main.settings") as mock_settings:
-            mock_settings.DATA_DIR = tmpdir
-            mock_settings.DRY_RUN = False
+        async def run():
+            async with lifespan(app):
+                pass
 
-            async def run():
-                async with lifespan(app):
-                    pass
-
-            asyncio.run(run())
+        asyncio.run(run())
 
     mock_instance.start.assert_called_once()
 
 
 @patch("src.main.threading.Thread")
-def test_lifespan_skips_login_when_no_token_file(mock_thread):
-    """Test that startup does NOT auto-login when no cached token file exists."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with patch("src.main.settings") as mock_settings:
-            mock_settings.DATA_DIR = tmpdir
-            mock_settings.DRY_RUN = False
+def test_lifespan_skips_login_when_store_is_empty(mock_thread):
+    """Test that startup does NOT auto-login when the shared store is empty."""
+    with patch("src.main.settings") as mock_settings, \
+         patch.object(garmin_client_module.session, "has_stored_tokens", return_value=False):
+        mock_settings.DRY_RUN = False
 
-            async def run():
-                async with lifespan(app):
-                    pass
+        async def run():
+            async with lifespan(app):
+                pass
 
-            asyncio.run(run())
+        asyncio.run(run())
 
     mock_thread.return_value.start.assert_not_called()
 
@@ -98,13 +94,18 @@ def test_dashboard_serves_html():
 # Webhook (POST /v1/webhook/garmin) tests
 # ---------------------------------------------------------------------------
 
-def test_webhook_no_credentials_returns_403():
-    """Test that webhook rejects requests with no credentials at all."""
+def test_webhook_no_credentials_returns_401():
+    """Test that webhook rejects requests with no credentials at all.
+
+    FastAPI's HTTPBearer returned 403 here before 0.112; it now returns 401,
+    which is the correct semantics (401 = unauthenticated, 403 = authenticated
+    but not permitted). Anything monitoring for 403 needs updating.
+    """
     response = client.post("/v1/webhook/garmin", json={
         "weight": 80.0, "body_fat": 20.0, "water": 55.0,
         "bone_mass": 3.0, "lean_body_mass": 64.0
     })
-    assert response.status_code == 403
+    assert response.status_code == 401
 
 
 def test_webhook_wrong_token_returns_401():
@@ -303,8 +304,8 @@ def test_status_unauthenticated_when_no_client():
 
 
 def test_status_authenticated_when_client_cached():
-    """Test status returns 'authenticated' when singleton client exists."""
-    garmin_client_module._garmin_client_instance = MagicMock()
+    """Test status returns 'authenticated' when the session holds a client."""
+    garmin_client_module.session._client = MagicMock()
 
     response = client.get("/v1/auth/status", headers=get_basic_auth_headers())
     assert response.status_code == 200
@@ -345,8 +346,8 @@ def test_login_starts_thread_when_unauthenticated(mock_thread):
 
 
 def test_login_returns_already_authenticated():
-    """Test that login returns 'success' when client is already cached."""
-    garmin_client_module._garmin_client_instance = MagicMock()
+    """Test that login returns 'success' when the session is already live."""
+    garmin_client_module.session._client = MagicMock()
 
     response = client.post("/v1/auth/login", headers=get_basic_auth_headers())
     assert response.status_code == 200

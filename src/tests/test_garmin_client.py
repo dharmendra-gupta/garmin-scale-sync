@@ -3,13 +3,14 @@ import json
 import tempfile
 import pytest
 import threading
+from contextlib import contextmanager
 from unittest.mock import patch, MagicMock
 
 from garminconnect import GarminConnectAuthenticationError, GarminConnectTooManyRequestsError, GarminConnectConnectionError
 import src.garmin_client as garmin_client_module
 from src.garmin_client import (
     mfa_state, memory_logs, prompt_mfa_callback, upload_to_garmin,
-    get_recent_logs, clear_recent_logs, log_attempt, reset_garmin_client,
+    get_recent_logs, clear_recent_logs, log_attempt,
     build_timestamp,
 )
 
@@ -111,14 +112,36 @@ def test_mfa_callback_timeout():
 # upload_to_garmin tests
 # ---------------------------------------------------------------------------
 
-@patch("src.garmin_client.get_garmin_client")
+@contextmanager
+def _session_yielding(client):
+    """Stand in for GarminSession.client(), which is a context manager."""
+    yield client
+
+
+def _patch_session_client(client=None, side_effect=None):
+    """Patch the session's client() context manager.
+
+    Pass `client` to have the upload succeed against a mock, or `side_effect`
+    to have entering the session raise.
+    """
+    if side_effect is not None:
+        return patch.object(
+            garmin_client_module.session, "client", side_effect=side_effect
+        )
+    return patch.object(
+        garmin_client_module.session,
+        "client",
+        return_value=_session_yielding(client),
+    )
+
+
 @patch("src.garmin_client.log_attempt")
-def test_upload_to_garmin_success(mock_log, mock_get_client):
+def test_upload_to_garmin_success(mock_log):
     """Test that upload logic calculates muscle mass and calls Garmin API correctly."""
     mock_client = MagicMock()
-    mock_get_client.return_value = mock_client
 
-    upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
+    with _patch_session_client(mock_client):
+        upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
 
     mock_client.add_body_composition.assert_called_once()
     call_kwargs = mock_client.add_body_composition.call_args.kwargs
@@ -133,14 +156,13 @@ def test_upload_to_garmin_success(mock_log, mock_get_client):
     assert mock_log.call_args.kwargs["status"] == "Success"
 
 
-@patch("src.garmin_client.get_garmin_client")
 @patch("src.garmin_client.log_attempt")
-def test_upload_to_garmin_only_weight(mock_log, mock_get_client):
+def test_upload_to_garmin_only_weight(mock_log):
     """Test that upload works with only weight, leaving other fields None."""
     mock_client = MagicMock()
-    mock_get_client.return_value = mock_client
 
-    upload_to_garmin(weight=75.0)
+    with _patch_session_client(mock_client):
+        upload_to_garmin(weight=75.0)
 
     mock_client.add_body_composition.assert_called_once()
     call_kwargs = mock_client.add_body_composition.call_args.kwargs
@@ -155,27 +177,24 @@ def test_upload_to_garmin_only_weight(mock_log, mock_get_client):
     assert mock_log.call_args.kwargs["status"] == "Success"
 
 
-@patch("src.garmin_client.get_garmin_client")
 @patch("src.garmin_client.log_attempt")
-def test_upload_to_garmin_uses_provided_date_time_tz(mock_log, mock_get_client):
+def test_upload_to_garmin_uses_provided_date_time_tz(mock_log):
     """Test that upload builds and passes the correct timestamp when date/time/tz are given."""
     mock_client = MagicMock()
-    mock_get_client.return_value = mock_client
 
-    upload_to_garmin(weight=80.0, date="2024-01-15", time="08:30:00", tz="+05:30")
+    with _patch_session_client(mock_client):
+        upload_to_garmin(weight=80.0, date="2024-01-15", time="08:30:00", tz="+05:30")
 
     call_kwargs = mock_client.add_body_composition.call_args.kwargs
     # 08:30+05:30 converted to UTC = 03:00 UTC
     assert call_kwargs["timestamp"] == "2024-01-15T03:00:00+00:00"
 
 
-@patch("src.garmin_client.get_garmin_client")
 @patch("src.garmin_client.log_attempt")
-def test_upload_to_garmin_failure_defaults_to_500(mock_log, mock_get_client):
+def test_upload_to_garmin_failure_defaults_to_500(mock_log):
     """Test that generic exceptions log http_code=500."""
-    mock_get_client.side_effect = Exception("Garmin API down")
-
-    upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
+    with _patch_session_client(side_effect=Exception("Garmin API down")):
+        upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
 
     mock_log.assert_called_once()
     assert mock_log.call_args.kwargs["status"] == "Failed"
@@ -183,61 +202,54 @@ def test_upload_to_garmin_failure_defaults_to_500(mock_log, mock_get_client):
     assert mock_log.call_args.kwargs["http_code"] == 500
 
 
-@patch("src.garmin_client.get_garmin_client")
 @patch("src.garmin_client.log_attempt")
-def test_upload_rate_limit_logs_429(mock_log, mock_get_client):
+def test_upload_rate_limit_logs_429(mock_log):
     """Test that GarminConnectTooManyRequestsError is logged with http_code 429."""
-    mock_get_client.side_effect = GarminConnectTooManyRequestsError("Rate limited")
-
-    upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
+    with _patch_session_client(side_effect=GarminConnectTooManyRequestsError("Rate limited")):
+        upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
 
     assert mock_log.call_args.kwargs["http_code"] == 429
 
 
-@patch("src.garmin_client.get_garmin_client")
 @patch("src.garmin_client.log_attempt")
-def test_upload_connection_error_logs_503(mock_log, mock_get_client):
-    """Test that GarminConnectConnectionError is logged with http_code 503."""
-    mock_get_client.side_effect = GarminConnectConnectionError("Connection failed")
-
-    upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
+def test_upload_connection_error_logs_503(mock_log):
+    """A genuine connection failure still logs 503 — it must not be mistaken
+    for an auth failure now that real 401s are typed correctly."""
+    with _patch_session_client(side_effect=GarminConnectConnectionError("Connection failed")):
+        upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
 
     assert mock_log.call_args.kwargs["http_code"] == 503
 
 
-@patch("src.garmin_client.reset_garmin_client")
 @patch("src.garmin_client.log_attempt")
-@patch("src.garmin_client.get_garmin_client")
-def test_upload_auth_error_resets_singleton(mock_get_client, mock_log, mock_reset):
-    """Test that GarminConnectAuthenticationError resets the singleton and logs 401."""
-    mock_get_client.side_effect = GarminConnectAuthenticationError("Unauthorized")
+def test_upload_auth_error_logs_401(mock_log):
+    """A rejected session logs 401. The session drops its own cached client,
+    so upload_to_garmin no longer has to reset anything itself."""
+    with _patch_session_client(side_effect=GarminConnectAuthenticationError("Unauthorized")):
+        upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
 
-    upload_to_garmin(weight=80.0, fat=20.0, water=55.0, bone=3.0, lean_mass=64.0)
-
-    mock_reset.assert_called_once()
     assert mock_log.call_args.kwargs["http_code"] == 401
 
 
 # ---------------------------------------------------------------------------
-# Singleton client tests
+# Session wiring tests
 # ---------------------------------------------------------------------------
 
-def test_get_garmin_client_caches_instance():
-    """Test that get_garmin_client returns cached instance on subsequent calls."""
-    mock_client = MagicMock()
-    garmin_client_module._garmin_client_instance = mock_client
-
-    from src.garmin_client import get_garmin_client
-    result = get_garmin_client()
-
-    assert result is mock_client
+def test_session_reports_authenticated_when_client_held():
+    """is_authenticated is the dashboard's authoritative signal."""
+    garmin_client_module.session._client = MagicMock()
+    assert garmin_client_module.session.is_authenticated is True
 
 
-def test_reset_garmin_client_clears_singleton():
-    """Test that reset_garmin_client sets the singleton to None."""
-    garmin_client_module._garmin_client_instance = MagicMock()
-    reset_garmin_client()
-    assert garmin_client_module._garmin_client_instance is None
+def test_session_invalidate_clears_cached_client():
+    """invalidate() drops the client so the next use re-reads the store."""
+    garmin_client_module.session._client = MagicMock()
+    garmin_client_module.session._synced_blob = "{}"
+
+    garmin_client_module.session.invalidate()
+
+    assert garmin_client_module.session.is_authenticated is False
+    assert garmin_client_module.session._synced_blob is None
 
 
 # ---------------------------------------------------------------------------

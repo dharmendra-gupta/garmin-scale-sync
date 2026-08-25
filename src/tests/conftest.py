@@ -19,8 +19,8 @@ def reset_shared_state():
     garmin_client.mfa_state["code"] = None
     garmin_client.mfa_state["event"].clear()
 
-    # Reset singleton client
-    garmin_client._garmin_client_instance = None
+    # Drop any cached Garmin session
+    garmin_client.session.invalidate()
 
     # Reset in-memory log buffer
     garmin_client.memory_logs.clear()
@@ -35,7 +35,7 @@ def reset_shared_state():
     garmin_client.mfa_state["waiting"] = False
     garmin_client.mfa_state["code"] = None
     garmin_client.mfa_state["event"].clear()
-    garmin_client._garmin_client_instance = None
+    garmin_client.session.invalidate()
     garmin_client.memory_logs.clear()
     main_module.login_thread = None
     main_module.login_error_detail = None

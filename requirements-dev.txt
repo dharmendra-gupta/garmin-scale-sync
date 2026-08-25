@@ -1,0 +1,8 @@
+# Installed only into the Dockerfile's `test` stage, not the runtime image:
+#   docker build --target test -t gss:test .
+
+-r requirements.txt
+
+pytest==9.1.1
+pytest-xdist==3.8.0
+httpx==0.28.1  # required by fastapi.testclient.TestClient
